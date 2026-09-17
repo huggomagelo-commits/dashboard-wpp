@@ -1,0 +1,11 @@
+# Normaliza quebras de linha: o repositório guarda LF, cada máquina usa o que
+# preferir. Sem isso, editar de outro computador faz o diff marcar o arquivo
+# inteiro como alterado.
+* text=auto eol=lf
+
+# Binários não devem ser tocados
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff  binary
+*.woff2 binary
