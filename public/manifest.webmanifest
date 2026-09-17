@@ -1,0 +1,13 @@
+{
+  "name": "Painel WhatsApp",
+  "short_name": "Painel",
+  "description": "Gestão de leads e follow-up do WhatsApp",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#05070C",
+  "theme_color": "#05070C",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

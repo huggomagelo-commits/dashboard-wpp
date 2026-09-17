@@ -1,0 +1,8 @@
+# Usado quando o deploy vem de um repositório conectado.
+# Redirecionamentos e cabeçalhos ficam em public/_redirects e public/_headers,
+# que o Vite copia para dist/ — assim a pasta publicada funciona sozinha,
+# inclusive arrastando só ela em app.netlify.com/drop.
+
+[build]
+  command = "npm run build"
+  publish = "dist"

@@ -1,0 +1,12 @@
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Sem este tipo o Netlify entrega o manifesto como octet-stream e o Chrome
+# no Android ignora — o "instalar na tela de início" some.
+/manifest.webmanifest
+  Content-Type: application/manifest+json

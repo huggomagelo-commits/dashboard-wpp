@@ -1,0 +1,4 @@
+# Todas as rotas caem no index.html — sem isso, abrir /leads direto dá 404.
+# Fica em public/ de propósito: o Vite copia para dist/, então a pasta
+# publicada é autossuficiente, mesmo arrastando só ela no Netlify.
+/*  /index.html  200

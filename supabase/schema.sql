@@ -1,0 +1,373 @@
+-- ============================================================================
+-- Painel WhatsApp — Goffex School
+-- Schema completo + segurança por linha (RLS)
+--
+-- Como usar: Supabase → SQL Editor → cole este arquivo inteiro → Run.
+-- Pode rodar de novo sem medo: tudo é idempotente.
+--
+-- Regra central: cada pessoa da equipe atende no próprio número e só enxerga
+-- os leads dela. Quem é admin enxerga tudo. Isso NÃO é controlado pela
+-- interface — é o banco que recusa, o que vale para LGPD.
+-- ============================================================================
+
+-- ---------------------------------------------------------------- extensões
+create extension if not exists "pgcrypto";
+
+-- ============================================================================
+-- TABELAS
+-- ============================================================================
+
+-- Espelha auth.users com o que o painel precisa saber sobre a pessoa.
+create table if not exists public.perfis (
+  id            uuid primary key references auth.users on delete cascade,
+  nome          text not null,
+  email         text not null unique,
+  papel         text not null default 'operador' check (papel in ('admin', 'operador', 'leitor')),
+  situacao      text not null default 'pendente' check (situacao in ('pendente', 'ativo', 'bloqueado')),
+  -- número de WhatsApp que esta pessoa atende (55 + DDD + número)
+  numero        text,
+  criado_em     timestamptz not null default now(),
+  ultimo_acesso timestamptz
+);
+
+comment on table public.perfis is 'Equipe. Conta nova entra como pendente até um admin liberar.';
+comment on column public.perfis.numero is 'Número de WhatsApp próprio. É a sessão que a pessoa conecta por QR.';
+
+-- Leads. A etiqueta vem da retriagem feita dentro do WhatsApp.
+create table if not exists public.leads (
+  id                uuid primary key default gen_random_uuid(),
+  responsavel       uuid references public.perfis(id) on delete set null,
+  nome              text not null,
+  telefone          text not null,
+  perfil            text not null default 'iniciante',
+  origem            text,
+  status            text not null default 'novo'
+                    check (status in ('novo', 'em_conversa', 'qualificado', 'proposta', 'cliente', 'perdido')),
+  etiquetas         text[] not null default '{}',
+  cadencia_pausada  boolean not null default false,
+  opt_out           boolean not null default false,
+  adiado_ate        timestamptz,
+  anotacao          text not null default '',
+  criado_em         timestamptz not null default now(),
+  atualizado_em     timestamptz not null default now(),
+  -- o mesmo telefone pode falar com duas pessoas da equipe, em números
+  -- diferentes: são duas conversas, não uma duplicata
+  unique (responsavel, telefone)
+);
+
+comment on column public.leads.etiquetas is 'Etiquetas do WhatsApp Business, sincronizadas pelo bridge.';
+comment on column public.leads.opt_out is 'Pediu para não receber mensagens. Bloqueia toda a cadência.';
+
+create index if not exists leads_responsavel_idx on public.leads (responsavel);
+create index if not exists leads_status_idx      on public.leads (status);
+create index if not exists leads_etiquetas_idx   on public.leads using gin (etiquetas);
+
+-- Mensagens da conversa, texto ou áudio.
+create table if not exists public.mensagens (
+  id          uuid primary key default gen_random_uuid(),
+  lead_id     uuid not null references public.leads on delete cascade,
+  -- id da mensagem no WhatsApp: impede duplicar quando o bridge reenvia
+  wa_id       text,
+  de          text not null check (de in ('lead', 'eu')),
+  tipo        text not null default 'texto' check (tipo in ('texto', 'audio', 'imagem', 'documento')),
+  texto       text not null default '',
+  transcricao text,
+  duracao_seg integer,
+  midia_url   text,
+  em          timestamptz not null default now(),
+  unique (lead_id, wa_id)
+);
+
+comment on column public.mensagens.transcricao is 'Em áudio é daqui que sai a informação do lead.';
+
+create index if not exists mensagens_lead_idx on public.mensagens (lead_id, em desc);
+
+-- Follow-ups já disparados, por marco da cadência.
+create table if not exists public.followups (
+  id      uuid primary key default gen_random_uuid(),
+  lead_id uuid not null references public.leads on delete cascade,
+  dia     integer not null,
+  em      timestamptz not null default now(),
+  por     uuid references public.perfis(id) on delete set null,
+  unique (lead_id, dia)
+);
+
+-- Auditoria: quem fez o quê. Dado sensível exige rastro.
+create table if not exists public.eventos (
+  id      uuid primary key default gen_random_uuid(),
+  lead_id uuid references public.leads on delete set null,
+  usuario uuid references public.perfis(id) on delete set null,
+  acao    text not null,
+  detalhe text,
+  em      timestamptz not null default now()
+);
+
+create index if not exists eventos_em_idx on public.eventos (em desc);
+
+-- Configuração da operação (marcos, janela, travas, etiquetas de lead).
+create table if not exists public.configuracoes (
+  id            integer primary key default 1 check (id = 1),
+  dados         jsonb not null default '{}'::jsonb,
+  atualizado_em timestamptz not null default now()
+);
+
+insert into public.configuracoes (id, dados) values (1, '{}'::jsonb)
+on conflict (id) do nothing;
+
+-- ============================================================================
+-- FUNÇÕES AUXILIARES
+--
+-- SECURITY DEFINER de propósito: elas consultam `perfis` por dentro das
+-- políticas de `perfis`. Sem isso a RLS entraria em recursão infinita.
+-- ============================================================================
+
+create or replace function public.papel_atual()
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select papel from public.perfis where id = auth.uid();
+$$;
+
+create or replace function public.esta_ativo()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce((select situacao = 'ativo' from public.perfis where id = auth.uid()), false);
+$$;
+
+create or replace function public.eh_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(
+    (select papel = 'admin' and situacao = 'ativo' from public.perfis where id = auth.uid()),
+    false
+  );
+$$;
+
+-- Pode agir sobre este lead? (é o dono ativo, ou é admin)
+create or replace function public.pode_ver_lead(lead_responsavel uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.eh_admin() or (public.esta_ativo() and lead_responsavel = auth.uid());
+$$;
+
+-- ============================================================================
+-- GATILHOS
+-- ============================================================================
+
+-- Toda conta nova do Auth ganha um perfil pendente automaticamente.
+-- A primeira pessoa a se cadastrar vira admin ativo — senão ninguém libera ninguém.
+create or replace function public.ao_criar_usuario()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  primeiro boolean;
+begin
+  select count(*) = 0 into primeiro from public.perfis;
+
+  insert into public.perfis (id, nome, email, papel, situacao)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data ->> 'nome', split_part(new.email, '@', 1)),
+    new.email,
+    case when primeiro then 'admin' else 'operador' end,
+    case when primeiro then 'ativo' else 'pendente' end
+  )
+  on conflict (id) do nothing;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists ao_criar_usuario on auth.users;
+create trigger ao_criar_usuario
+  after insert on auth.users
+  for each row execute function public.ao_criar_usuario();
+
+-- Mantém `atualizado_em` honesto.
+create or replace function public.marcar_atualizacao()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.atualizado_em = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists leads_atualizado_em on public.leads;
+create trigger leads_atualizado_em
+  before update on public.leads
+  for each row execute function public.marcar_atualizacao();
+
+-- Regra de ouro: o lead respondeu, a cadência para e zera.
+-- Fica no banco, não na interface — assim vale também para o bridge.
+create or replace function public.ao_receber_mensagem()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.de = 'lead' then
+    delete from public.followups where lead_id = new.lead_id;
+
+    update public.leads
+       set cadencia_pausada = false,
+           adiado_ate = null,
+           status = case when status = 'novo' then 'novo' else status end
+     where id = new.lead_id;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists mensagens_zeram_cadencia on public.mensagens;
+create trigger mensagens_zeram_cadencia
+  after insert on public.mensagens
+  for each row execute function public.ao_receber_mensagem();
+
+-- ============================================================================
+-- SEGURANÇA POR LINHA (RLS)
+-- ============================================================================
+
+alter table public.perfis         enable row level security;
+alter table public.leads          enable row level security;
+alter table public.mensagens      enable row level security;
+alter table public.followups      enable row level security;
+alter table public.eventos        enable row level security;
+alter table public.configuracoes  enable row level security;
+
+-- ------------------------------------------------------------------- perfis
+drop policy if exists perfis_leitura on public.perfis;
+create policy perfis_leitura on public.perfis for select
+  using (id = auth.uid() or public.eh_admin());
+
+drop policy if exists perfis_atualiza_proprio on public.perfis;
+create policy perfis_atualiza_proprio on public.perfis for update
+  using (id = auth.uid())
+  with check (
+    id = auth.uid()
+    -- ninguém promove a si mesmo nem se libera sozinho
+    and papel = public.papel_atual()
+    and situacao = (select situacao from public.perfis where id = auth.uid())
+  );
+
+drop policy if exists perfis_admin_tudo on public.perfis;
+create policy perfis_admin_tudo on public.perfis for all
+  using (public.eh_admin())
+  with check (public.eh_admin());
+
+-- -------------------------------------------------------------------- leads
+drop policy if exists leads_leitura on public.leads;
+create policy leads_leitura on public.leads for select
+  using (public.pode_ver_lead(responsavel));
+
+drop policy if exists leads_insere on public.leads;
+create policy leads_insere on public.leads for insert
+  with check (public.pode_ver_lead(responsavel));
+
+drop policy if exists leads_atualiza on public.leads;
+create policy leads_atualiza on public.leads for update
+  using (public.pode_ver_lead(responsavel))
+  with check (public.pode_ver_lead(responsavel));
+
+drop policy if exists leads_apaga on public.leads;
+create policy leads_apaga on public.leads for delete
+  using (public.eh_admin());
+
+-- ---------------------------------------------------------------- mensagens
+drop policy if exists mensagens_leitura on public.mensagens;
+create policy mensagens_leitura on public.mensagens for select
+  using (exists (
+    select 1 from public.leads l
+     where l.id = mensagens.lead_id and public.pode_ver_lead(l.responsavel)
+  ));
+
+drop policy if exists mensagens_insere on public.mensagens;
+create policy mensagens_insere on public.mensagens for insert
+  with check (exists (
+    select 1 from public.leads l
+     where l.id = mensagens.lead_id and public.pode_ver_lead(l.responsavel)
+  ));
+
+-- ---------------------------------------------------------------- followups
+drop policy if exists followups_leitura on public.followups;
+create policy followups_leitura on public.followups for select
+  using (exists (
+    select 1 from public.leads l
+     where l.id = followups.lead_id and public.pode_ver_lead(l.responsavel)
+  ));
+
+drop policy if exists followups_escreve on public.followups;
+create policy followups_escreve on public.followups for all
+  using (exists (
+    select 1 from public.leads l
+     where l.id = followups.lead_id and public.pode_ver_lead(l.responsavel)
+  ))
+  with check (exists (
+    select 1 from public.leads l
+     where l.id = followups.lead_id and public.pode_ver_lead(l.responsavel)
+  ));
+
+-- ------------------------------------------------------------------ eventos
+drop policy if exists eventos_leitura on public.eventos;
+create policy eventos_leitura on public.eventos for select
+  using (public.eh_admin() or usuario = auth.uid());
+
+drop policy if exists eventos_insere on public.eventos;
+create policy eventos_insere on public.eventos for insert
+  with check (public.esta_ativo() and usuario = auth.uid());
+
+-- Auditoria não se apaga nem se reescreve. Não existe policy de update/delete
+-- de propósito: com RLS ligada, o que não tem policy é negado.
+
+-- ----------------------------------------------------------- configurações
+drop policy if exists config_leitura on public.configuracoes;
+create policy config_leitura on public.configuracoes for select
+  using (public.esta_ativo());
+
+drop policy if exists config_admin on public.configuracoes;
+create policy config_admin on public.configuracoes for all
+  using (public.eh_admin())
+  with check (public.eh_admin());
+
+-- ============================================================================
+-- TEMPO REAL
+-- Sem isso a fila só se move quando você recarrega a página.
+-- ============================================================================
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+     where pubname = 'supabase_realtime' and tablename = 'leads'
+  ) then
+    alter publication supabase_realtime add table public.leads;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+     where pubname = 'supabase_realtime' and tablename = 'mensagens'
+  ) then
+    alter publication supabase_realtime add table public.mensagens;
+  end if;
+end $$;
