@@ -6,3 +6,9 @@
 [build]
   command = "npm run build"
   publish = "dist"
+
+[build.environment]
+  # Fixa a versão do Node no build. Sem isso o Netlify usa o padrão dele, que
+  # muda com o tempo — e o build passaria a rodar numa versão nunca testada
+  # aqui. 24 é a mesma usada no desenvolvimento.
+  NODE_VERSION = "24"
