@@ -33,18 +33,22 @@ gatilhos:
 
 ## 3. Pegar as chaves
 
-**Project Settings → Data API**:
+**Project Settings → API Keys** (a URL fica em **Data API**):
 
 | Campo no Supabase | Variável |
 |---|---|
 | Project URL | `VITE_SUPABASE_URL` |
-| `anon` `public` | `VITE_SUPABASE_ANON_KEY` |
+| **Publishable key** (`sb_publishable_…`) ou `anon` `public` | `VITE_SUPABASE_ANON_KEY` |
 
-A chave `anon` é pública por natureza — ela vai no JavaScript do navegador e
-não abre nada sozinha. Quem protege os dados é a RLS.
+A variável mantém o nome `ANON_KEY` por herança, mas aceita as duas: a `anon`
+antiga (um JWT) e a `publishable` nova, que a substitui — o Supabase aposenta a
+`anon` no fim de 2026. Projeto novo já mostra a `publishable`; use essa.
 
-**A chave `service_role` não entra no painel.** Ela ignora a RLS e só pode
-viver no backend (o bridge, na Fase 3).
+Ser pública é da natureza dela: vai no JavaScript do navegador e não abre nada
+sozinha. Quem protege os dados é a RLS.
+
+**A chave secreta não entra no painel** — nem `service_role`, nem
+`sb_secret_…`. Ela ignora a RLS e só pode viver no backend (o bridge, na Fase 3).
 
 ---
 

@@ -8,10 +8,16 @@
 // Isso existe para o site publicado não quebrar enquanto o banco não está
 // configurado, e para você conseguir mostrar o painel sem expor dados reais.
 //
-// A chave `anon` é pública por natureza: ela vai no JavaScript do navegador e
-// não dá acesso a nada sozinha — quem protege os dados é a RLS do schema.sql.
-// A chave `service_role` NUNCA entra aqui: ela ignora a RLS e só pode viver no
-// backend (o bridge, na Fase 3).
+// A variável se chama ANON_KEY por herança. Serve para as duas chaves públicas
+// que o Supabase oferece: a `anon` antiga (um JWT) e a `publishable` nova
+// (`sb_publishable_…`), que a substitui — o Supabase aposenta a `anon` no fim
+// de 2026. Qualquer uma das duas funciona aqui, sem mudar código.
+//
+// Ser pública é da natureza dela: vai no JavaScript do navegador e não dá
+// acesso a nada sozinha — quem protege os dados é a RLS do schema.sql.
+//
+// O que NUNCA entra aqui é a chave secreta — `service_role` ou `sb_secret_…`.
+// Ela ignora a RLS e só pode viver no backend (o bridge, na Fase 3).
 // ============================================================================
 
 import { createClient } from "@supabase/supabase-js";
