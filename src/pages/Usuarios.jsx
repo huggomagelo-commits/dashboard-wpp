@@ -66,7 +66,7 @@ export function Usuarios() {
               <span className="chip-dot" />
               {sit.rotulo}
             </Chip>
-            <Chip>{PAPEIS[u.papel].rotulo}</Chip>
+            <Chip>{PAPEIS[u.papel]?.rotulo || u.papel}</Chip>
             {u.senhaPadrao && <Chip cor="danger">senha padrão</Chip>}
           </span>
         </div>

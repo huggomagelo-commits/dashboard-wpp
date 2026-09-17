@@ -85,7 +85,7 @@ Não é a interface que esconde os dados; é o banco que recusa. Se alguém abri
 o console do navegador e tentar ler os leads de outra pessoa, o Postgres
 devolve vazio.
 
-| Tabela | Operador | Admin |
+| Tabela | Closer e SDR | Admin |
 |---|---|---|
 | `perfis` | vê e edita só o próprio (não muda papel nem situação) | tudo |
 | `leads` | só onde `responsavel = ele` | tudo (menos apagar, que é só admin) |

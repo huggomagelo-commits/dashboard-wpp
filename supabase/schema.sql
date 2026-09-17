@@ -22,7 +22,9 @@ create table if not exists public.perfis (
   id            uuid primary key references auth.users on delete cascade,
   nome          text not null,
   email         text not null unique,
-  papel         text not null default 'operador' check (papel in ('admin', 'operador', 'leitor')),
+  -- 'operador' aparece como "Closer" na tela; 'sdr' faz a qualificação. A chave
+  -- antiga foi mantida para não migrar dado nenhum.
+  papel         text not null default 'operador' check (papel in ('admin', 'operador', 'sdr', 'leitor')),
   situacao      text not null default 'pendente' check (situacao in ('pendente', 'ativo', 'bloqueado')),
   -- número de WhatsApp que esta pessoa atende (55 + DDD + número)
   numero        text,
@@ -32,6 +34,13 @@ create table if not exists public.perfis (
 
 comment on table public.perfis is 'Equipe. Conta nova entra como pendente até um admin liberar.';
 comment on column public.perfis.numero is 'Número de WhatsApp próprio. É a sessão que a pessoa conecta por QR.';
+
+-- `create table if not exists` não mexe numa tabela que já existe, então a
+-- lista de papéis acima não chegaria a quem rodou uma versão anterior deste
+-- arquivo. Recriar a restrição resolve, e rodar de novo continua inofensivo.
+alter table public.perfis drop constraint if exists perfis_papel_check;
+alter table public.perfis add constraint perfis_papel_check
+  check (papel in ('admin', 'operador', 'sdr', 'leitor'));
 
 -- Leads. A etiqueta vem da retriagem feita dentro do WhatsApp.
 create table if not exists public.leads (
