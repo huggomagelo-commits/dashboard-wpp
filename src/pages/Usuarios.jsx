@@ -31,6 +31,11 @@ export function Usuarios() {
     if (form.senha.length < 6) return setErro("A senha precisa ter pelo menos 6 caracteres.");
     const r = await cadastrar(form);
     if (r.erro) return setErro(r.erro);
+    if (!r.usuario) {
+      // Não veio o id da conta nova: dá para criar, mas não para já liberar.
+      setNovo(false);
+      return avisar("Conta criada. Libere o acesso e defina o papel na lista.", "warn");
+    }
     atualizarUsuario(r.usuario.id, {
       papel: form.papel,
       situacao: "ativo",

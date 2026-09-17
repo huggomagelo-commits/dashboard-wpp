@@ -9,7 +9,7 @@
 // mesmas funções, para nenhuma tela precisar saber em qual modo está.
 // ============================================================================
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CtxAuth, PERMISSOES } from "./authContexto.js";
 
 const CHAVE_USUARIOS = "painel.usuarios";
@@ -118,10 +118,17 @@ export function ProvedorAuthLocal({ children }) {
   const [usuario, setUsuario] = useState(null);
   const [carregando, setCarregando] = useState(true);
 
+  // Espelho síncrono da lista. `setUsuarios` só vale no próximo render, então
+  // duas ações no mesmo clique — criar a conta e já definir o papel dela — leem
+  // a lista antiga e a segunda apaga o que a primeira gravou. O ref sempre tem
+  // o estado atual, inclusive no meio do clique.
+  const usuariosRef = useRef([]);
+
   useEffect(() => {
     let vivo = true;
     semear().then((lista) => {
       if (!vivo) return;
+      usuariosRef.current = lista;
       setUsuarios(lista);
       const id = ler(CHAVE_SESSAO, null);
       const achado = id ? lista.find((u) => u.id === id && u.situacao === "ativo") : null;
@@ -134,25 +141,27 @@ export function ProvedorAuthLocal({ children }) {
   }, []);
 
   const salvar = useCallback((lista) => {
+    usuariosRef.current = lista;
     setUsuarios(lista);
     gravar(CHAVE_USUARIOS, lista);
   }, []);
 
   const entrar = useCallback(
     async (email, senha) => {
-      const alvo = usuarios.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
+      const lista = usuariosRef.current;
+      const alvo = lista.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
       if (!alvo) return { erro: "E-mail ou senha incorretos." };
       if ((await hash(senha)) !== alvo.senha) return { erro: "E-mail ou senha incorretos." };
       if (alvo.situacao === "pendente") return { erro: "Seu acesso ainda não foi liberado pelo administrador." };
       if (alvo.situacao === "bloqueado") return { erro: "Seu acesso foi revogado." };
 
       const atualizado = { ...alvo, ultimoAcesso: new Date().toISOString() };
-      salvar(usuarios.map((u) => (u.id === alvo.id ? atualizado : u)));
+      salvar(lista.map((u) => (u.id === alvo.id ? atualizado : u)));
       setUsuario(atualizado);
       gravar(CHAVE_SESSAO, alvo.id);
       return { usuario: atualizado };
     },
-    [usuarios, salvar]
+    [salvar]
   );
 
   const sair = useCallback(() => {
@@ -166,8 +175,9 @@ export function ProvedorAuthLocal({ children }) {
 
   const cadastrar = useCallback(
     async ({ nome, email, senha }) => {
+      const lista = usuariosRef.current;
       const limpo = email.trim().toLowerCase();
-      if (usuarios.some((u) => u.email.toLowerCase() === limpo)) {
+      if (lista.some((u) => u.email.toLowerCase() === limpo)) {
         return { erro: "Já existe uma conta com este e-mail." };
       }
       const novo = {
@@ -180,27 +190,27 @@ export function ProvedorAuthLocal({ children }) {
         criadoEm: new Date().toISOString(),
         ultimoAcesso: null,
       };
-      salvar([...usuarios, novo]);
+      salvar([...lista, novo]);
       return { usuario: novo };
     },
-    [usuarios, salvar]
+    [salvar]
   );
 
   const atualizarUsuario = useCallback(
     (id, mudancas) => {
-      const lista = usuarios.map((u) => (u.id === id ? { ...u, ...mudancas } : u));
+      const lista = usuariosRef.current.map((u) => (u.id === id ? { ...u, ...mudancas } : u));
       salvar(lista);
       if (usuario?.id === id) setUsuario(lista.find((u) => u.id === id));
     },
-    [usuarios, salvar, usuario]
+    [salvar, usuario]
   );
 
   const removerUsuario = useCallback(
     (id) => {
       if (id === "admin") return;
-      salvar(usuarios.filter((u) => u.id !== id));
+      salvar(usuariosRef.current.filter((u) => u.id !== id));
     },
-    [usuarios, salvar]
+    [salvar]
   );
 
   const trocarSenha = useCallback(

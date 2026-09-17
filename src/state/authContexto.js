@@ -7,7 +7,9 @@ export const CtxAuth = createContext(null);
 
 export const PAPEIS = {
   admin: { rotulo: "Administrador", descricao: "Acesso total, gerencia usuários e configurações." },
-  operador: { rotulo: "Operador", descricao: "Atende os próprios leads e envia follow-ups." },
+  // A chave continua `operador` porque é o valor gravado no banco e usado pela
+  // RLS. Só o rótulo mudou, para falar a língua da equipe.
+  operador: { rotulo: "Vendedor", descricao: "Atende os próprios leads e envia follow-ups." },
   leitor: { rotulo: "Leitor", descricao: "Só visualiza. Não envia mensagem nem altera lead." },
 };
 

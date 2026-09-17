@@ -23,6 +23,10 @@ export function ProvedorAuthSupabase({ children }) {
   const [avisoDeAcesso, setAvisoDeAcesso] = useState(null);
   // evita laço quando a própria saída dispara onAuthStateChange de novo
   const encerrando = useRef(false);
+  // enquanto o admin cria a conta de outra pessoa, a sessão troca duas vezes
+  // (vira a do novo usuário e volta). Ignorar esses eventos evita que o painel
+  // entenda a troca como um login e derrube quem está criando.
+  const criandoConta = useRef(false);
 
   const carregarEquipe = useCallback(async () => {
     try {
@@ -96,7 +100,7 @@ export function ProvedorAuthSupabase({ children }) {
     supabase.auth.getSession().then(({ data }) => aplicarSessao(data.session));
 
     const { data: assinatura } = supabase.auth.onAuthStateChange((_evento, sessao) => {
-      if (encerrando.current) return;
+      if (encerrando.current || criandoConta.current) return;
       aplicarSessao(sessao);
     });
 
@@ -124,15 +128,57 @@ export function ProvedorAuthSupabase({ children }) {
     setUsuarios([]);
   }, []);
 
-  const cadastrar = useCallback(async ({ nome, email, senha }) => {
-    const { error } = await supabase.auth.signUp({
-      email: email.trim().toLowerCase(),
-      password: senha,
-      options: { data: { nome: nome.trim() } },
-    });
-    if (error) return { erro: traduzErro(error) };
-    return { pendente: true };
-  }, []);
+  /**
+   * Dois usos no mesmo lugar:
+   *
+   *   • ninguém logado — é a pessoa se cadastrando. Entra como `pendente` e
+   *     espera liberação (a primeira conta do sistema vira admin, pelo gatilho).
+   *
+   *   • admin logado — está criando a conta de alguém da equipe. Aqui mora uma
+   *     armadilha do Supabase: `signUp` troca a sessão ativa pela do usuário
+   *     recém-criado. Sem tratamento, o admin sai do próprio painel e vira a
+   *     pessoa que acabou de cadastrar — e como ela nasce `pendente`, o painel
+   *     ainda a expulsa em seguida. Por isso guardamos a sessão do admin antes
+   *     e a devolvemos depois, com os eventos de troca silenciados.
+   */
+  const cadastrar = useCallback(
+    async ({ nome, email, senha }) => {
+      const { data: sessaoAntes } = await supabase.auth.getSession();
+      const sessaoDoAdmin = sessaoAntes?.session ?? null;
+
+      if (sessaoDoAdmin) criandoConta.current = true;
+      try {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim().toLowerCase(),
+          password: senha,
+          options: { data: { nome: nome.trim() } },
+        });
+        if (error) return { erro: traduzErro(error) };
+
+        if (!sessaoDoAdmin) return { pendente: true };
+
+        const { error: erroVolta } = await supabase.auth.setSession({
+          access_token: sessaoDoAdmin.access_token,
+          refresh_token: sessaoDoAdmin.refresh_token,
+        });
+        if (erroVolta) {
+          // A conta foi criada, mas não conseguimos voltar para o admin. Sair é
+          // mais honesto do que deixá-lo agindo com a identidade de outra pessoa.
+          criandoConta.current = false;
+          await sair();
+          return {
+            erro: "A conta foi criada, mas sua sessão expirou. Entre de novo e defina o papel em Usuários.",
+          };
+        }
+
+        await carregarEquipe();
+        return { usuario: data.user };
+      } finally {
+        criandoConta.current = false;
+      }
+    },
+    [carregarEquipe, sair]
+  );
 
   const atualizarUsuario = useCallback(
     async (id, mudancas) => {
