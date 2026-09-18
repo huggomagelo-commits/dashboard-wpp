@@ -556,6 +556,11 @@ comment on column public.fila_envio.nao_antes_de is
 create index if not exists fila_envio_proxima_idx
   on public.fila_envio (perfil_id, nao_antes_de) where status = 'pendente';
 
+-- Índice sobre o resumo do texto, não sobre o texto: uma mensagem longa
+-- estouraria o limite de tamanho de chave do btree.
+create index if not exists fila_envio_texto_idx
+  on public.fila_envio (md5(texto));
+
 create or replace function public.espacar_envio()
 returns trigger
 language plpgsql
@@ -563,6 +568,8 @@ security definer
 set search_path = public
 as $$
 declare
+  minimo integer;
+  maximo integer;
   espaco integer;
   ultimo timestamptz;
 begin
@@ -571,16 +578,43 @@ begin
   -- disparo em rajada que esta função existe para impedir.
   perform 1 from public.sessoes where perfil_id = new.perfil_id for update;
 
-  espaco := coalesce(
-    (select (dados->>'intervaloMinSegundos')::integer from public.configuracoes where id = 1),
-    45
-  );
+  -- Texto idêntico para leads diferentes é o padrão que denuncia disparo em
+  -- massa: mil pessoas recebendo a mesma frase no mesmo dia. Cada lead recebe
+  -- uma mensagem escrita para ele.
+  --
+  -- O limite de 80 caracteres separa as duas coisas que parecem iguais: repetir
+  -- "bom dia" ou "consegue falar agora?" é conversa normal e continua liberado;
+  -- repetir um follow-up inteiro é o disparo que queremos impedir.
+  -- A checagem é global, não por número: "cada lead recebe uma mensagem escrita
+  -- para ele" não deixa de valer porque quem digitou foi outra pessoa da equipe.
+  if length(new.texto) > 80 and exists (
+    select 1 from public.fila_envio f
+     where f.lead_id <> new.lead_id
+       and f.status <> 'erro'
+       and md5(f.texto) = md5(new.texto)
+  ) then
+    raise exception
+      'Esta mensagem já foi enviada para outro lead. Personalize antes de enviar.'
+      using errcode = 'check_violation';
+  end if;
+
+  select coalesce((dados->>'intervaloMinSegundos')::integer, 27),
+         coalesce((dados->>'intervaloMaxSegundos')::integer, 48)
+    into minimo, maximo
+    from public.configuracoes where id = 1;
+
+  minimo := coalesce(minimo, 27);
+  maximo := coalesce(maximo, 48);
 
   -- Piso, não sugestão: a configuração pode ser mais conservadora, nunca menos.
   -- Afrouxar daqui para baixo é o caminho mais curto para perder o número.
-  if espaco is null or espaco < 30 then
-    espaco := 30;
-  end if;
+  if minimo < 27 then minimo := 27; end if;
+  if maximo < minimo then maximo := minimo; end if;
+
+  -- Sorteado a cada mensagem, não fixo. Intervalo constante é assinatura de
+  -- robô: trinta segundos exatos, mil vezes, é um padrão que se detecta sozinho.
+  -- A irregularidade é o ponto, não um detalhe de implementação.
+  espaco := minimo + floor(random() * (maximo - minimo + 1))::integer;
 
   select max(nao_antes_de) into ultimo
     from public.fila_envio

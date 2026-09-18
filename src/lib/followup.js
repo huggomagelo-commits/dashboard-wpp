@@ -38,8 +38,10 @@ export const CONFIG_PADRAO = {
   diasUteis: [1, 2, 3, 4, 5, 6], // 0 = domingo
   // travas de disparo
   tetoDiario: 30,
-  intervaloMinSegundos: 45,
-  intervaloMaxSegundos: 180,
+  // Faixa sorteada a cada envio. O banco impõe 27s como piso e nunca aceita
+  // menos, mesmo que alguém altere isto aqui.
+  intervaloMinSegundos: 27,
+  intervaloMaxSegundos: 48,
   exigirAprovacao: true,
 };
 

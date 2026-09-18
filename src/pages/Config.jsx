@@ -193,7 +193,10 @@ export function Config() {
                 setRascunho({ ...rascunho, intervaloMinSegundos: min, intervaloMaxSegundos: max });
               }}
             >
-              <option value="20-60">20 a 60 segundos</option>
+              {/* Nada abaixo de 27s: é o piso que o banco impõe no gatilho de
+                  espaçamento. Oferecer menos aqui só criaria uma tela que
+                  discorda do que acontece de verdade. */}
+              <option value="27-48">27 a 48 segundos</option>
               <option value="45-180">45 segundos a 3 minutos</option>
               <option value="120-420">2 a 7 minutos</option>
             </select>
