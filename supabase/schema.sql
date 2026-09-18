@@ -532,3 +532,73 @@ begin
     alter publication supabase_realtime add table public.fila_envio;
   end if;
 end $$;
+
+-- ----------------------------------------------------- espaçamento de envio
+--
+-- Nenhuma mensagem sai colada na anterior. O horário mínimo de cada envio é
+-- decidido quando a linha entra na fila, não na hora de enviar — então clicar
+-- dez vezes cria dez linhas já espalhadas, em vez de dez disparos para o
+-- bridge segurar depois.
+--
+-- Mora no banco de propósito. No código do bridge isto seria uma promessa de
+-- comportamento: sumiria num bug, num reinício no meio da fila ou no dia em
+-- que duas instâncias subissem por engano. Aqui é a transação que garante.
+--
+-- O espaçamento vale por número, não por lead: duas conversas diferentes no
+-- mesmo WhatsApp continuam sendo o mesmo número aos olhos de quem bane.
+
+alter table public.fila_envio
+  add column if not exists nao_antes_de timestamptz not null default now();
+
+comment on column public.fila_envio.nao_antes_de is
+  'Horário mínimo de saída, calculado na entrada da fila. O bridge nunca envia antes.';
+
+create index if not exists fila_envio_proxima_idx
+  on public.fila_envio (perfil_id, nao_antes_de) where status = 'pendente';
+
+create or replace function public.espacar_envio()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  espaco integer;
+  ultimo timestamptz;
+begin
+  -- Trava a sessão de quem envia. Sem isso, dois cliques simultâneos leriam a
+  -- mesma "última saída" e marcariam o mesmo horário — que é exatamente o
+  -- disparo em rajada que esta função existe para impedir.
+  perform 1 from public.sessoes where perfil_id = new.perfil_id for update;
+
+  espaco := coalesce(
+    (select (dados->>'intervaloMinSegundos')::integer from public.configuracoes where id = 1),
+    45
+  );
+
+  -- Piso, não sugestão: a configuração pode ser mais conservadora, nunca menos.
+  -- Afrouxar daqui para baixo é o caminho mais curto para perder o número.
+  if espaco is null or espaco < 30 then
+    espaco := 30;
+  end if;
+
+  select max(nao_antes_de) into ultimo
+    from public.fila_envio
+   where perfil_id = new.perfil_id
+     and status <> 'erro';
+
+  -- Sem predecessora, sai agora: espaçamento é entre uma mensagem e outra, e a
+  -- primeira não tem outra. Segurar a primeira só atrasaria a resposta de quem
+  -- acabou de escrever, sem reduzir risco nenhum.
+  new.nao_antes_de := case
+    when ultimo is null then now()
+    else greatest(now(), ultimo + make_interval(secs => espaco))
+  end;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists fila_espaca on public.fila_envio;
+create trigger fila_espaca before insert on public.fila_envio
+  for each row execute function public.espacar_envio();

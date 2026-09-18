@@ -262,3 +262,10 @@ usuário no banco.
 
 **As travas existem por um motivo.** Teto diário, intervalo entre disparos e horário
 comercial protegem o número e as pessoas. Afrouxá-las aumenta o risco de bloqueio.
+
+**Nenhuma mensagem sai colada na anterior.** O horário mínimo de saída é calculado
+quando a linha entra em `fila_envio`, por gatilho no banco — então clicar dez vezes
+cria dez envios já espalhados, em vez de dez disparos em rajada. O espaçamento vem de
+`intervaloMinSegundos` e tem **piso de 30 segundos**: a configuração pode ser mais
+conservadora, nunca menos. Vale por número, não por lead — duas conversas diferentes
+no mesmo WhatsApp continuam sendo o mesmo número aos olhos de quem bane.
