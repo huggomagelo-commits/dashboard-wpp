@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowRight, KeyRound, Loader2, Mail, User, Zap } from "lucide-react";
 import { useAuth } from "../state/auth.jsx";
 import { Aviso, Campo } from "../components/ui.jsx";
+import { problemaDeConfig } from "../services/supabase.js";
 
 export function Login() {
   const { entrar, cadastrar, avisoDeAcesso, ehDemonstracao } = useAuth();
@@ -107,6 +108,15 @@ export function Login() {
             </p>
           )}
         </form>
+
+        {problemaDeConfig && (
+          <Aviso tipo="warn">
+            <b>Configuração do banco com problema.</b> {problemaDeConfig}
+            <br />
+            Corrija em Netlify → Environment variables e refaça o deploy. Até lá o painel
+            segue em demonstração, com dados de exemplo.
+          </Aviso>
+        )}
 
         {ehDemonstracao ? (
           <Aviso tipo="warn">

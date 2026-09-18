@@ -25,7 +25,51 @@ import { createClient } from "@supabase/supabase-js";
 const url = import.meta.env.VITE_SUPABASE_URL?.trim();
 const chave = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
 
-export const temSupabase = Boolean(url && chave);
+const pareceChave = (v) => /^eyJ[A-Za-z0-9_-]+\./.test(v) || /^sb_(publishable|secret)_/.test(v);
+const pareceEndereco = (v) => /^https?:\/\//i.test(v);
+
+/**
+ * Por que isto existe: variável *ausente* sempre foi tratada (cai em modo
+ * demonstração). Variável *presente e inválida* não era — e um valor errado
+ * fazia o createClient lançar durante a importação do módulo, antes do React
+ * desenhar qualquer coisa. O resultado era uma página em branco, sem pista
+ * nenhuma para quem só vê o site publicado.
+ *
+ * Aconteceu de verdade, com a URL e a chave trocadas de lugar entre si, que é
+ * justamente o engano que os nomes das variáveis convidam a cometer. Por isso
+ * a troca tem mensagem própria: é o caso mais provável e o mais confuso.
+ */
+function conferir() {
+  if (!url && !chave) return null; // modo demonstração, proposital
+  if (!url) return "Falta VITE_SUPABASE_URL.";
+  if (!chave) return "Falta VITE_SUPABASE_ANON_KEY.";
+
+  if (pareceChave(url) && pareceEndereco(chave)) {
+    return "VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY estão trocadas entre si.";
+  }
+  if (!pareceEndereco(url)) {
+    return "VITE_SUPABASE_URL precisa começar com https:// — é o Project URL, não a chave.";
+  }
+  try {
+    new URL(url);
+  } catch {
+    return "VITE_SUPABASE_URL não é um endereço válido.";
+  }
+  if (url.includes("/rest/v1")) {
+    return "VITE_SUPABASE_URL não leva /rest/v1 no fim — use só o Project URL.";
+  }
+  if (pareceEndereco(chave)) {
+    return "VITE_SUPABASE_ANON_KEY recebeu um endereço em vez da chave.";
+  }
+  return null;
+}
+
+/** Mensagem do que está errado na configuração, ou null quando está tudo certo. */
+export const problemaDeConfig = conferir();
+
+// Configuração quebrada não derruba o painel: ele volta para o modo
+// demonstração e mostra o motivo, que é mais útil do que uma tela branca.
+export const temSupabase = Boolean(url && chave) && !problemaDeConfig;
 
 export const supabase = temSupabase
   ? createClient(url, chave, {
