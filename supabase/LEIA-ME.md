@@ -97,6 +97,15 @@ devolve vazio.
 | `followups` | só dos leads dele | tudo |
 | `eventos` | só os que ele gerou | tudo |
 | `configuracoes` | só lê | lê e grava |
+| `sessoes` | vê a própria; só escreve o campo `pedido` | vê todas |
+| `fila_envio` | enfileira e cancela o que ainda não saiu | tudo |
+
+Em `sessoes`, o limite da coluna não vem de política e sim de privilégio
+(`grant update (pedido)`). Sem isso a pessoa poderia gravar
+`estado = 'conectado'` e mentir para a própria tela. Quem descreve o estado da
+conexão é sempre o bridge.
+
+Ninguém lê o QR de outra pessoa: ler o QR alheio é entrar no WhatsApp dela.
 
 Auditoria (`eventos`) não tem política de *update* nem *delete* de propósito:
 com RLS ligada, o que não tem política é negado. Ninguém reescreve o histórico.

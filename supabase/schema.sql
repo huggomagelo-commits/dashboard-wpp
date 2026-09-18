@@ -380,3 +380,155 @@ begin
     alter publication supabase_realtime add table public.mensagens;
   end if;
 end $$;
+
+-- ============================================================================
+-- FASE 3 — A PONTE COM O WHATSAPP
+--
+-- Decisão de desenho: o banco é o correio entre o painel e o bridge. O bridge
+-- não abre porta nenhuma para a internet — ele assina as mudanças daqui e age.
+--
+-- Isso elimina de uma vez o endpoint público, o CORS, a autenticação da API e
+-- o segredo compartilhado. O que não existe não pode ser invadido nem
+-- configurado errado. O bridge usa a chave `service_role`, que só vive no
+-- servidor dele e passa por cima da RLS.
+-- ============================================================================
+
+-- Uma sessão de WhatsApp por pessoa da equipe. O bridge manda o estado e o QR;
+-- o painel lê e desenha. O caminho de volta é a coluna `pedido`, única que a
+-- pessoa escreve: ela pede, o bridge atende e devolve para 'nenhum'.
+create table if not exists public.sessoes (
+  perfil_id     uuid primary key references public.perfis on delete cascade,
+  numero        text,
+  estado        text not null default 'desconectado'
+                check (estado in ('desconectado', 'aguardando_qr', 'conectando', 'conectado', 'erro')),
+  qr            text,
+  erro          text,
+  pedido        text not null default 'nenhum'
+                check (pedido in ('nenhum', 'conectar', 'desconectar')),
+  conectado_em  timestamptz,
+  atualizado_em timestamptz not null default now()
+);
+
+comment on table public.sessoes is 'Estado da conexão de cada número. Quem escreve estado e QR é o bridge.';
+comment on column public.sessoes.qr is 'Válido por poucos segundos. O bridge troca sozinho até alguém ler.';
+comment on column public.sessoes.pedido is 'Único campo que a pessoa escreve. O bridge zera depois de atender.';
+
+-- Fila de saída. O painel enfileira, o bridge envia respeitando teto diário,
+-- intervalo e horário — as travas que protegem o número de ser banido.
+create table if not exists public.fila_envio (
+  id          uuid primary key default gen_random_uuid(),
+  lead_id     uuid not null references public.leads on delete cascade,
+  perfil_id   uuid not null references public.perfis on delete cascade,
+  texto       text not null,
+  -- qual marco da cadência originou o envio; nulo quando foi resposta manual
+  marco       integer,
+  status      text not null default 'pendente'
+              check (status in ('pendente', 'enviando', 'enviado', 'erro')),
+  tentativas  integer not null default 0,
+  erro        text,
+  criado_por  uuid references public.perfis(id) on delete set null,
+  criado_em   timestamptz not null default now(),
+  enviado_em  timestamptz
+);
+
+comment on table public.fila_envio is 'O painel enfileira aqui; o bridge envia e devolve o resultado.';
+
+create index if not exists fila_envio_pendentes_idx
+  on public.fila_envio (status, criado_em) where status = 'pendente';
+create index if not exists fila_envio_lead_idx on public.fila_envio (lead_id);
+
+drop trigger if exists sessoes_atualizacao on public.sessoes;
+create trigger sessoes_atualizacao before update on public.sessoes
+  for each row execute function public.marcar_atualizacao();
+
+-- A linha de sessão nasce junto com o perfil. Assim ninguém precisa criar a
+-- própria — e, não podendo criar, também não pode nascer dizendo que já está
+-- conectada. Quem descreve o estado é sempre o bridge.
+create or replace function public.ao_criar_perfil_abrir_sessao()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.sessoes (perfil_id, numero)
+  values (new.id, new.numero)
+  on conflict (perfil_id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists perfil_abre_sessao on public.perfis;
+create trigger perfil_abre_sessao after insert on public.perfis
+  for each row execute function public.ao_criar_perfil_abrir_sessao();
+
+-- Quem já existia antes desta seção também ganha a sua.
+insert into public.sessoes (perfil_id, numero)
+select id, numero from public.perfis
+on conflict (perfil_id) do nothing;
+
+-- ------------------------------------------------------------------- RLS
+
+alter table public.sessoes    enable row level security;
+alter table public.fila_envio enable row level security;
+
+drop policy if exists sessoes_leitura on public.sessoes;
+create policy sessoes_leitura on public.sessoes for select
+  using (perfil_id = auth.uid() or public.eh_admin());
+
+-- Ninguém vê o QR de outra pessoa: ler o QR alheio é entrar no WhatsApp dela.
+-- Por isso admin enxerga o estado de todo mundo, mas a leitura acima é a única
+-- porta, e o painel só mostra o QR na tela de quem é dono da sessão.
+
+drop policy if exists sessoes_pede on public.sessoes;
+create policy sessoes_pede on public.sessoes for update
+  using (perfil_id = auth.uid() and public.esta_ativo())
+  with check (perfil_id = auth.uid());
+
+-- A política acima libera a linha; o privilégio abaixo limita a coluna. Sem
+-- ele, a pessoa poderia escrever `estado = 'conectado'` e mentir para a
+-- própria tela. Quem diz o estado é o bridge, e só ele.
+revoke update on public.sessoes from anon, authenticated;
+grant  update (pedido) on public.sessoes to authenticated;
+
+-- Não existe policy de insert nem de delete: a linha nasce e morre junto com o
+-- perfil, pelo gatilho acima. O que não tem policy é negado.
+
+drop policy if exists fila_leitura on public.fila_envio;
+create policy fila_leitura on public.fila_envio for select
+  using (public.pode_ver_lead(perfil_id));
+
+drop policy if exists fila_insere on public.fila_envio;
+create policy fila_insere on public.fila_envio for insert
+  with check (
+    public.pode_ver_lead(perfil_id)
+    and exists (select 1 from public.leads l where l.id = lead_id and public.pode_ver_lead(l.responsavel))
+  );
+
+-- Dá para cancelar o que ainda não saiu. Depois de enviado não se apaga: a
+-- mensagem já está no celular do lead, e o histórico tem que refletir isso.
+drop policy if exists fila_cancela on public.fila_envio;
+create policy fila_cancela on public.fila_envio for delete
+  using (public.pode_ver_lead(perfil_id) and status = 'pendente');
+
+-- Quem marca 'enviado' ou 'erro' é o bridge. Não existe policy de update de
+-- propósito: com RLS ligada, o que não tem policy é negado.
+
+-- ------------------------------------------------------------- tempo real
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+     where pubname = 'supabase_realtime' and tablename = 'sessoes'
+  ) then
+    alter publication supabase_realtime add table public.sessoes;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+     where pubname = 'supabase_realtime' and tablename = 'fila_envio'
+  ) then
+    alter publication supabase_realtime add table public.fila_envio;
+  end if;
+end $$;
